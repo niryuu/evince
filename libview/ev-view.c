@@ -3398,6 +3398,8 @@ ev_view_create_annotation (EvView *view)
 	}
 	ev_document_annotations_add_annotation (EV_DOCUMENT_ANNOTATIONS (view->document),
 						annot, &doc_rect);
+	/* Re-fetch area as eg. adding Text Markup annots updates area for its bounding box */
+	ev_annotation_get_area (annot, &doc_rect);
 	ev_document_doc_mutex_unlock ();
 
 	/* If the page didn't have annots, mark the cache as dirty */
@@ -5628,6 +5630,148 @@ ev_view_motion_notify_event (GtkWidget      *widget,
 	} 
 
 	return FALSE;
+}
+
+/**
+ * ev_view_find_page_at_location:
+ * @view: #EvView instance
+ * @x: x coordinate
+ * @y: y coordinate
+ *
+ * Finds the page under the @x @y coordinates.
+ *
+ * For the coordinates you can pass the ones obtained
+ * from Eg. ev_document_misc_get_pointer_position()
+ *
+ * Returns: the number for the page under position @x,@y
+ * or -1 if it could not locate a page at that position.
+ *
+ * Since: 3.28
+ */
+gint
+ev_view_find_page_at_location (EvView *view,
+			       gdouble x,
+			       gdouble y)
+{
+	gint page, offset;
+
+	page = -1;
+	find_page_at_location (view, x + view->scroll_x, y + view->scroll_y,
+			       &page, &offset, &offset);
+	return page;
+}
+
+/**
+ * ev_view_add_text_markup_annotation_for_selected_text:
+ * @view: #EvView instance
+ * @page: page number
+ * @crosspage: whether to add another annotation for the selected text
+ * on previous or following page, i.e. user selected text across pages.
+ *
+ * Adds a Text Markup annotation (defaulting to a 'highlight' one) to the
+ * currently selected text on @page .
+ *
+ * If @crosspage is %TRUE, it will add a similar annotation for the
+ * selected text (if any) on the previous or following page of @page.
+ * This allows to annotate a text selection happening across two pages.
+ *
+ * Returns: %TRUE if annotation was added successfully, %FALSE otherwise.
+ *
+ * Since: 3.28
+ */
+gboolean
+ev_view_add_text_markup_annotation_for_selected_text (EvView  *view,
+						      gint     page,
+						      gboolean crosspage)
+{
+	GdkPoint view_point;
+	EvPoint doc_point;
+	EvPoint sel2_doc_point1;
+	EvPoint sel2_doc_point2;
+	EvViewSelection *selection;
+	EvViewSelection *selection2;
+	gboolean has_cross_selection;
+	gint cross_page;
+
+	has_cross_selection = FALSE;
+
+	if (view->adding_annot_info.annot || view->adding_annot_info.adding_annot)
+		return FALSE;
+
+	selection = find_selection_for_page (view, page);
+
+	if (selection == NULL)
+		return FALSE;
+
+	if (crosspage) {
+		gboolean try_next = FALSE;
+		gboolean try_prev = FALSE;
+		selection2 = NULL;
+
+		try_next = page + 1 < ev_document_get_n_pages (view->document);
+		try_prev = page > 0;
+		if (try_prev)
+			selection2 = find_selection_for_page (view, page - 1);
+		if (try_next && selection2 == NULL)
+			selection2 = find_selection_for_page (view, page + 1);
+
+		if (selection2) {
+			has_cross_selection = TRUE;
+			cross_page = selection2->page;
+			sel2_doc_point1.x = selection2->rect.x1;
+			sel2_doc_point1.y = selection2->rect.y1;
+			sel2_doc_point2.x = selection2->rect.x2;
+			sel2_doc_point2.y = selection2->rect.y2;
+		}
+	}
+
+	view->adding_annot_info.adding_annot = TRUE;
+	view->adding_annot_info.type = EV_ANNOTATION_TYPE_TEXT_MARKUP;
+
+	doc_point.x = selection->rect.x1;
+	doc_point.y = selection->rect.y1;
+	_ev_view_transform_doc_point_to_view_point (view, page, &doc_point, &view_point);
+	view->adding_annot_info.start.x = view_point.x;
+	view->adding_annot_info.start.y = view_point.y;
+
+	doc_point.x = selection->rect.x2;
+	doc_point.y = selection->rect.y2;
+	_ev_view_transform_doc_point_to_view_point (view, page, &doc_point, &view_point);
+	view->adding_annot_info.stop.x = view_point.x;
+	view->adding_annot_info.stop.y = view_point.y;
+
+	clear_selection (view);
+	selection2 = NULL; /* this is now invalid, mark as such */
+
+	ev_view_create_annotation (view);
+
+	if (!view->adding_annot_info.adding_annot)
+		return FALSE;
+
+	g_signal_emit (view, signals[SIGNAL_ANNOT_ADDED], 0, view->adding_annot_info.annot);
+
+	if (crosspage && has_cross_selection) {
+		view->adding_annot_info.adding_annot = TRUE;
+		view->adding_annot_info.type = EV_ANNOTATION_TYPE_TEXT_MARKUP;
+
+		_ev_view_transform_doc_point_to_view_point (view, cross_page, &sel2_doc_point1, &view_point);
+		view->adding_annot_info.start.x = view_point.x;
+		view->adding_annot_info.start.y = view_point.y;
+
+		_ev_view_transform_doc_point_to_view_point (view, cross_page, &sel2_doc_point2, &view_point);
+		view->adding_annot_info.stop.x = view_point.x;
+		view->adding_annot_info.stop.y = view_point.y;
+
+		ev_view_create_annotation (view);
+
+		if (view->adding_annot_info.adding_annot)
+			g_signal_emit (view, signals[SIGNAL_ANNOT_ADDED], 0, view->adding_annot_info.annot);
+	}
+
+	view->adding_annot_info.adding_annot = FALSE;
+	view->adding_annot_info.annot = NULL;
+
+	return TRUE;
 }
 
 static gboolean
@@ -9232,6 +9376,19 @@ gboolean
 ev_view_get_has_selection (EvView *view)
 {
 	return view->selection_info.selections != NULL;
+}
+
+gboolean
+ev_view_get_has_selection_in_page (EvView *view,
+				   gint    page)
+{
+	return find_selection_for_page (view, page) != NULL;
+}
+
+guint
+ev_view_get_n_pages_with_selection (EvView *view)
+{
+	return g_list_length (view->selection_info.selections);
 }
 
 void

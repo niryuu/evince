@@ -67,11 +67,18 @@ void            ev_view_copy_link_address (EvView         *view,
 void		ev_view_select_all	  (EvView         *view);
 gboolean        ev_view_get_has_selection (EvView         *view);
 
+gboolean        ev_view_get_has_selection_in_page (EvView *view,
+						   gint    page);
+guint           ev_view_get_n_pages_with_selection (EvView *view);
+
 /* Page size */
 gboolean	ev_view_can_zoom_in       (EvView         *view);
 void		ev_view_zoom_in		  (EvView         *view);
 gboolean        ev_view_can_zoom_out      (EvView         *view);
 void		ev_view_zoom_out	  (EvView         *view);
+gint            ev_view_find_page_at_location (EvView *view,
+                                               gdouble x,
+                                               gdouble y);
 
 /* Find */
 void            ev_view_find_started              (EvView         *view,
@@ -125,6 +132,9 @@ void           ev_view_begin_add_annotation  (EvView          *view,
 void           ev_view_cancel_add_annotation (EvView          *view);
 void           ev_view_remove_annotation     (EvView          *view,
 					      EvAnnotation    *annot);
+gboolean       ev_view_add_text_markup_annotation_for_selected_text (EvView  *view,
+								     gint     page,
+								     gboolean crosspage);
 
 /* Caret navigation */
 gboolean       ev_view_supports_caret_navigation    (EvView  *view);

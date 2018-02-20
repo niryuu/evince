@@ -180,6 +180,7 @@ struct _EvWindowPrivate {
 	/* Popup view */
 	GMenuModel   *view_popup_menu;
 	GtkWidget    *view_popup;
+	gint          page_under_view_popup;
 	EvLink       *link;
 	EvImage      *image;
 	EvAnnotation *annot;
@@ -329,6 +330,9 @@ static void     ev_window_popup_cmd_open_link_new_window(GSimpleAction    *actio
 static void     ev_window_popup_cmd_copy_link_address   (GSimpleAction    *action,
 							 GVariant         *parameter,
 							 gpointer          user_data);
+static void     ev_window_popup_cmd_annotate_selected_text (GSimpleAction    *action,
+							    GVariant         *parameter,
+							    gpointer          user_data);
 static void     ev_window_popup_cmd_save_image_as       (GSimpleAction    *action,
 							 GVariant         *parameter,
 							 gpointer          user_data);
@@ -545,6 +549,7 @@ ev_window_update_actions_sensitivity (EvWindow *ev_window)
 	ev_window_set_action_enabled (ev_window, "open-menu", !recent_view_mode);
 
 	/* Same for popups specific actions */
+	ev_window_set_action_enabled (ev_window, "annotate-selected-text", !recent_view_mode);
 	ev_window_set_action_enabled (ev_window, "open-link", !recent_view_mode);
 	ev_window_set_action_enabled (ev_window, "open-link-new-window", !recent_view_mode);
 	ev_window_set_action_enabled (ev_window, "go-to-link", !recent_view_mode);
@@ -5046,6 +5051,16 @@ view_menu_annot_popup (EvWindow     *ev_window,
 	g_simple_action_set_enabled (G_SIMPLE_ACTION (action), show_attachment);
 }
 
+static void
+view_menu_text_selection_popup (EvWindow *ev_window,
+				gboolean  enable)
+{
+	GAction *action;
+
+	action = g_action_map_lookup_action (G_ACTION_MAP (ev_window), "annotate-selected-text");
+	g_simple_action_set_enabled (G_SIMPLE_ACTION (action), enable);
+}
+
 static gboolean
 view_menu_popup_cb (EvView   *view,
 		    GList    *items,
@@ -5055,6 +5070,9 @@ view_menu_popup_cb (EvView   *view,
 	gboolean has_link = FALSE;
 	gboolean has_image = FALSE;
 	gboolean has_annot = FALSE;
+	gboolean has_text_selected;
+	gint x, y, page;
+	guint n_pages_selected;
 
 	for (l = items; l; l = g_list_next (l)) {
 		if (EV_IS_LINK (l->data)) {
@@ -5075,6 +5093,19 @@ view_menu_popup_cb (EvView   *view,
 		view_menu_image_popup (ev_window, NULL);
 	if (!has_annot)
 		view_menu_annot_popup (ev_window, NULL);
+
+	ev_document_misc_get_pointer_position (GTK_WIDGET (view), &x, &y);
+	page = ev_view_find_page_at_location (view, x, y);
+
+	if (page == -1)
+		page = ev_document_model_get_page (ev_window->priv->model);
+
+	ev_window->priv->page_under_view_popup = page;
+	has_text_selected = !has_annot && ev_view_get_has_selection_in_page (view, page);
+	n_pages_selected = ev_view_get_n_pages_with_selection (view);
+
+	/* we don't allow to annotate text on more than two pages */
+	view_menu_text_selection_popup (ev_window, has_text_selected && n_pages_selected < 3);
 
 	if (!ev_window->priv->view_popup) {
 		ev_window->priv->view_popup = gtk_menu_new_from_model (ev_window->priv->view_popup_menu);
@@ -5704,7 +5735,8 @@ static const GActionEntry actions[] = {
 	{ "open-attachment", ev_window_popup_cmd_open_attachment },
 	{ "save-attachment", ev_window_popup_cmd_save_attachment_as },
 	{ "annot-properties", ev_window_popup_cmd_annot_properties },
-	{ "remove-annot", ev_window_popup_cmd_remove_annotation }
+	{ "remove-annot", ev_window_popup_cmd_remove_annotation },
+	{ "annotate-selected-text", ev_window_popup_cmd_annotate_selected_text },
 };
 
 static void
@@ -6063,6 +6095,18 @@ ev_window_popup_cmd_open_link (GSimpleAction *action,
 	EvWindow *window = user_data;
 
 	ev_view_handle_link (EV_VIEW (window->priv->view), window->priv->link);
+}
+
+static void
+ev_window_popup_cmd_annotate_selected_text (GSimpleAction *action,
+					    GVariant      *parameter,
+					    gpointer       user_data)
+{
+	EvWindow *ev_window = user_data;
+	EvView *view = EV_VIEW (ev_window->priv->view);
+	gint page = ev_window->priv->page_under_view_popup;
+
+	ev_view_add_text_markup_annotation_for_selected_text (view, page, TRUE);
 }
 
 static void
